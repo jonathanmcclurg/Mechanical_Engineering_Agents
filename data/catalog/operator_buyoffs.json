@@ -1,0 +1,56 @@
+[
+  {
+    "field_id": "BUYOFF_VISUAL_INSPECTION",
+    "display_name": "Visual Inspection Buyoff",
+    "category": "operator_buyoff",
+    "field_type": "categorical",
+    "description": "Operator visual inspection signoff",
+    "tags": ["buyoff", "visual", "inspection", "quality_gate"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "BUYOFF_SEAL_PLACEMENT",
+    "display_name": "Seal Placement Buyoff",
+    "category": "operator_buyoff",
+    "field_type": "categorical",
+    "description": "Operator verification of seal placement",
+    "tags": ["buyoff", "seal", "placement", "quality_gate"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "BUYOFF_TORQUE_VERIFICATION",
+    "display_name": "Torque Verification Buyoff",
+    "category": "operator_buyoff",
+    "field_type": "categorical",
+    "description": "Operator verification of torque values",
+    "tags": ["buyoff", "torque", "verification", "quality_gate"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "BUYOFF_FINAL_ASSEMBLY",
+    "display_name": "Final Assembly Buyoff",
+    "category": "operator_buyoff",
+    "field_type": "categorical",
+    "description": "Final assembly operator signoff",
+    "tags": ["buyoff", "final_assembly", "quality_gate"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "OPERATOR_ID",
+    "display_name": "Operator ID",
+    "category": "operator_buyoff",
+    "field_type": "identifier",
+    "description": "ID of operator who performed buyoff",
+    "tags": ["operator", "traceability", "human_factor"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "STATION_ID",
+    "display_name": "Station ID",
+    "category": "operator_buyoff",
+    "field_type": "identifier",
+    "description": "Assembly station identifier",
+    "tags": ["station", "traceability", "process_step"],
+    "applicable_part_families": ["*"]
+  }
+]

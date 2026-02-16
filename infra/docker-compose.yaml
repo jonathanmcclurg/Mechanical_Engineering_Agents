@@ -1,0 +1,74 @@
+# Docker Compose for Manufacturing RCA Multi-Agent System
+# On-prem deployment configuration
+
+version: '3.8'
+
+services:
+  # PostgreSQL with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rca-postgres
+    environment:
+      POSTGRES_USER: rca_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: rca_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rca_user -d rca_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RCA API Service
+  rca-api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    container_name: rca-api
+    environment:
+      DATABASE_URL: postgresql://rca_user:${POSTGRES_PASSWORD:-changeme}@postgres:5432/rca_db
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL_NAME: ${LLM_MODEL_NAME:-llama3:70b}
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../data:/app/data
+      - ../config:/app/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Ollama for local LLM (optional - can point to external LLM server)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rca-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    # Uncomment below for GPU support (NVIDIA)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  postgres_data:
+  ollama_data:
+
+networks:
+  default:
+    name: rca-network

@@ -1,0 +1,1 @@
+"""Analysis recipes module."""

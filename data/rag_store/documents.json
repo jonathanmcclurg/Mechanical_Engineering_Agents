@@ -1,0 +1,43 @@
+[
+  {
+    "document_id": "797246e20da3",
+    "filename": "sample_product_guide.md",
+    "title": "# HYD-VALVE-200 Product Guide",
+    "revision": "Rev ision",
+    "effective_date": null,
+    "sections": [
+      "# HYD-VALVE-200 Product Guide",
+      "## 1. Product Overview",
+      "### 1.1 Key Features",
+      "### 1.2 Applications",
+      "## 2. Specifications",
+      "### 2.1 Critical Dimensions",
+      "### 2.2 Material Specifications",
+      "### 2.3 Assembly Torque Requirements",
+      "## 3. Sealing System Design",
+      "### 3.1 O-Ring Specifications",
+      "### 3.2 Seal Gland Design",
+      "### 3.3 Common Failure Modes",
+      "## 4. Leak Test Procedure",
+      "### 4.1 Test Method",
+      "### 4.2 Test Parameters",
+      "### 4.3 Test Procedure",
+      "1. Install unit in test fixture",
+      "2. Evacuate test chamber to <1 torr",
+      "3. Pressurize unit with helium to 500 PSI",
+      "4. Allow 30-second stabilization"
+    ],
+    "critical_features": [],
+    "critical_parameters": [
+      "Operating pressure range: 0-3000 PSI",
+      "Flow rate: 0-50 GPM",
+      "Spool: 17-4 PH",
+      "Acceptable Range: 15-25",
+      "Critical: **",
+      "Critical: **"
+    ],
+    "known_failure_modes": [],
+    "ingested_at": "2026-02-08T22:35:22.854084",
+    "chunk_count": 20
+  }
+]

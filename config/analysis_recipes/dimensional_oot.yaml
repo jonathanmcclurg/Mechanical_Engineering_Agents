@@ -1,0 +1,164 @@
+# Analysis Recipe: Dimensional Out-of-Tolerance
+# Version: 1.0.0
+
+recipe_id: dimensional-001
+failure_type: dimensional_oot
+version: "1.0.0"
+name: "Dimensional Out-of-Tolerance Analysis"
+description: |
+  Recipe for analyzing parts that fail dimensional inspection.
+  Applies to machined, molded, or formed components.
+
+# Required fields in the failure case
+required_case_fields:
+  - part_number
+  - lot_number
+  - test_value
+  - spec_lower
+  - spec_upper
+  - test_name  # Which dimension failed
+
+# Data sources needed
+data_requirements:
+  - source_name: dimensional_history
+    source_type: sql
+    required_columns:
+      - serial_number
+      - measurement_datetime
+      - dimension_name
+      - measured_value
+      - lot_number
+      - machine_id
+    optional_columns:
+      - operator_id
+      - fixture_id
+      - tool_id
+      - ambient_temp
+    min_rows: 100
+    time_window: "60d"
+    
+  - source_name: machine_parameters
+    source_type: sql
+    required_columns:
+      - machine_id
+      - parameter_datetime
+      - spindle_speed
+      - feed_rate
+      - coolant_temp
+    optional_columns:
+      - tool_wear
+      - vibration_level
+    min_rows: 50
+    time_window: "30d"
+    
+  - source_name: tool_changes
+    source_type: sql
+    required_columns:
+      - machine_id
+      - tool_id
+      - change_datetime
+      - tool_lot
+      - parts_since_change
+    min_rows: 10
+    time_window: "30d"
+    
+  - source_name: material_lots
+    source_type: sql
+    required_columns:
+      - lot_number
+      - material_lot
+      - supplier_id
+      - material_cert_hardness
+    min_rows: 20
+
+# Primary statistical methods
+primary_methods:
+  - method: xbar_s_chart
+    description: "Control chart of dimension by production lot"
+    target_variable: measured_value
+    grouping_key: lot_number
+    subgroup_size: 5
+    alpha: 0.05
+    control_rules:
+      - beyond_3sigma
+      - run_of_8
+      - trend_of_6
+      - zone_a_2of3
+    nonparametric_fallback: false
+    
+  - method: individuals_mr
+    description: "Individuals chart over time to detect drift"
+    target_variable: measured_value
+    grouping_key: measurement_datetime
+    alpha: 0.05
+    control_rules:
+      - beyond_3sigma
+      - trend_of_6
+    nonparametric_fallback: false
+    
+  - method: two_sample_ttest
+    description: "Compare suspect machine vs other machines"
+    target_variable: measured_value
+    grouping_key: is_suspect_machine
+    alpha: 0.05
+    practical_threshold: 0.3  # Tighter threshold for dimensions
+    nonparametric_fallback: true
+    
+  - method: capability_study
+    description: "Calculate Cp/Cpk for the failing dimension"
+    target_variable: measured_value
+    alpha: 0.05
+
+# Secondary methods
+secondary_methods:
+  - method: one_way_anova
+    description: "Compare dimensions across machines"
+    target_variable: measured_value
+    grouping_key: machine_id
+    alpha: 0.05
+    nonparametric_fallback: true
+    
+  - method: correlation
+    description: "Check correlation with tool wear"
+    target_variable: measured_value
+    grouping_key: parts_since_tool_change
+    alpha: 0.05
+    
+  - method: two_sample_ttest
+    description: "Compare material lots"
+    target_variable: measured_value
+    grouping_key: material_lot
+    alpha: 0.05
+    nonparametric_fallback: true
+
+# Common hypotheses
+common_hypotheses:
+  - "Tool wear: Cutting tool has exceeded useful life"
+  - "Machine drift: CNC axis positioning has drifted"
+  - "Fixture issue: Workholding fixture is worn or damaged"
+  - "Material variation: Incoming material hardness or composition varies"
+  - "Thermal drift: Machine/environment temperature affecting dimensions"
+  - "Program error: Recent CNC program change introduced error"
+  - "Coolant issue: Coolant concentration or temperature out of spec"
+  - "Operator setup: Incorrect tool offsets or setup parameters"
+
+# Product guide sections
+relevant_guide_sections:
+  - "Critical Dimensions"
+  - "GD&T Requirements"
+  - "Material Specifications"
+  - "Machining Process Parameters"
+  - "Tool Life Requirements"
+
+must_include_fields:
+  test_ids:
+    - FLOW_RATE
+  roa_parameters:
+    - TORQUE_MAIN_HOUSING
+    - HOUSING_LOT
+  operator_buyoffs:
+    - BUYOFF_TORQUE_VERIFICATION
+
+# Thresholds
+min_effect_size: 0.3  # Tighter for dimensional control
+min_confidence: 0.75

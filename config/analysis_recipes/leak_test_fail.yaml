@@ -1,0 +1,138 @@
+# Analysis Recipe: Helium Leak Test Failure
+# Version: 1.0.0
+
+recipe_id: leak-test-001
+failure_type: leak_test_fail
+version: "1.0.0"
+name: "Helium Leak Test Failure Analysis"
+description: |
+  Recipe for analyzing units that fail helium leak testing.
+  Applies to all products with hermetic sealing requirements.
+
+# Required fields in the failure case
+required_case_fields:
+  - part_number
+  - lot_number
+  - test_value
+  - spec_upper
+  - station_id
+
+# Data sources needed
+data_requirements:
+  - source_name: leak_test_history
+    source_type: sql
+    required_columns:
+      - serial_number
+      - test_datetime
+      - leak_rate
+      - lot_number
+      - station_id
+    optional_columns:
+      - operator_id
+      - ambient_temp
+      - ambient_humidity
+    min_rows: 50
+    time_window: "90d"
+    
+  - source_name: component_lots
+    source_type: sql
+    required_columns:
+      - serial_number
+      - component_name
+      - component_lot
+      - supplier_id
+    min_rows: 30
+    
+  - source_name: assembly_parameters
+    source_type: sql
+    required_columns:
+      - serial_number
+      - torque_value
+      - assembly_datetime
+      - fixture_id
+    optional_columns:
+      - operator_id
+    min_rows: 30
+
+# Primary statistical methods (run in order)
+primary_methods:
+  - method: xbar_s_chart
+    description: "Check for special cause variation by O-ring lot"
+    target_variable: leak_rate
+    grouping_key: component_lot_oring
+    subgroup_size: 5
+    alpha: 0.05
+    control_rules:
+      - beyond_3sigma
+      - run_of_8
+      - trend_of_6
+    nonparametric_fallback: false
+    
+  - method: two_sample_ttest
+    description: "Compare failing lot vs historical baseline"
+    target_variable: leak_rate
+    grouping_key: is_suspect_lot
+    alpha: 0.05
+    practical_threshold: 0.5  # Cohen's d
+    nonparametric_fallback: true
+    
+  - method: xbar_s_chart
+    description: "Check for assembly torque drift over time"
+    target_variable: torque_value
+    grouping_key: assembly_date
+    subgroup_size: 10
+    control_rules:
+      - beyond_3sigma
+      - trend_of_6
+    nonparametric_fallback: false
+
+# Secondary methods (run if primary inconclusive)
+secondary_methods:
+  - method: one_way_anova
+    description: "Compare leak rates across all component lots"
+    target_variable: leak_rate
+    grouping_key: component_lot_oring
+    alpha: 0.05
+    nonparametric_fallback: true
+    
+  - method: correlation
+    description: "Check correlation between torque and leak rate"
+    target_variable: leak_rate
+    grouping_key: torque_value
+    alpha: 0.05
+
+# Common hypotheses for this failure type
+common_hypotheses:
+  - "O-ring lot variation: A specific O-ring lot has out-of-spec dimensions or material properties"
+  - "Surface finish degradation: Sealing surface roughness has drifted out of specification"
+  - "Assembly torque drift: Torque wrench calibration drift or operator variation"
+  - "Contamination: Particulate or chemical contamination on sealing surfaces"
+  - "Environmental factors: Temperature or humidity during assembly affecting seal"
+  - "Fixture wear: Assembly fixture wear causing misalignment"
+  - "Supplier material change: Undisclosed material or process change from supplier"
+
+# Product guide sections to always retrieve
+relevant_guide_sections:
+  - "Sealing System Design"
+  - "O-Ring Specifications"
+  - "Assembly Torque Requirements"
+  - "Leak Test Procedure"
+  - "Critical Dimensions - Seal Gland"
+
+must_include_fields:
+  test_ids:
+    - LEAK_RATE
+    - LEAK_RESULT
+    - PRESSURE_DROP
+  roa_parameters:
+    - TORQUE_SEAL_RING
+    - GASKET_LOT
+    - SEAL_LOT
+    - CURE_TIME
+  operator_buyoffs:
+    - BUYOFF_SEAL_PLACEMENT
+    - BUYOFF_VISUAL_INSPECTION
+
+# Thresholds
+min_effect_size: 0.5  # Cohen's d
+min_confidence: 0.7

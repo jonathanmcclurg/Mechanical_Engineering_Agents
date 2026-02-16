@@ -1,0 +1,10 @@
+{
+  "failure_type": "leak_test_fail",
+  "failure_description": "Unit failed helium leak test and exceeds acceptance criteria.",
+  "part_number": "HYD-VALVE-200",
+  "serial_number": "SN-2026-00789",
+  "test_name": "Helium_Leak_Test",
+  "test_value": 2.3e-6,
+  "spec_lower": 0,
+  "spec_upper": 1e-6
+}

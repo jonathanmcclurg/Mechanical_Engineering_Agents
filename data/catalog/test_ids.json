@@ -1,0 +1,59 @@
+[
+  {
+    "field_id": "LEAK_RATE",
+    "display_name": "Leak Rate",
+    "category": "test_data",
+    "field_type": "numeric",
+    "description": "Helium leak test rate measurement",
+    "unit": "mbar·L/s",
+    "tags": ["leak", "helium", "seal", "pressure_decay"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "LEAK_RESULT",
+    "display_name": "Leak Test Result",
+    "category": "test_data",
+    "field_type": "categorical",
+    "description": "Pass/Fail result of leak test",
+    "tags": ["leak", "pass_fail", "seal"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "PRESSURE_DROP",
+    "display_name": "Pressure Drop",
+    "category": "test_data",
+    "field_type": "numeric",
+    "description": "Pressure decay during leak test",
+    "unit": "psi",
+    "tags": ["leak", "pressure", "decay"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "FLOW_RATE",
+    "display_name": "Flow Rate",
+    "category": "test_data",
+    "field_type": "numeric",
+    "description": "Flow rate measurement",
+    "unit": "SLPM",
+    "tags": ["flow", "performance", "dimensional_effect"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "ELECTRICAL_CONTINUITY",
+    "display_name": "Electrical Continuity",
+    "category": "test_data",
+    "field_type": "categorical",
+    "description": "Electrical continuity test result",
+    "tags": ["electrical", "continuity", "pass_fail"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "HIPOT_RESULT",
+    "display_name": "HiPot Test Result",
+    "category": "test_data",
+    "field_type": "categorical",
+    "description": "High potential test result",
+    "tags": ["electrical", "hipot", "insulation", "pass_fail"],
+    "applicable_part_families": ["*"]
+  }
+]

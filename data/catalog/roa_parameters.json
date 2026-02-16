@@ -1,0 +1,78 @@
+[
+  {
+    "field_id": "TORQUE_MAIN_HOUSING",
+    "display_name": "Main Housing Torque",
+    "category": "record_of_assembly",
+    "field_type": "numeric",
+    "description": "Torque applied to main housing fasteners",
+    "unit": "Nm",
+    "tags": ["torque", "assembly", "fastener", "mechanical"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "TORQUE_SEAL_RING",
+    "display_name": "Seal Ring Torque",
+    "category": "record_of_assembly",
+    "field_type": "numeric",
+    "description": "Torque applied to seal ring",
+    "unit": "Nm",
+    "tags": ["torque", "seal", "assembly"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "ADHESIVE_BATCH",
+    "display_name": "Adhesive Batch Number",
+    "category": "record_of_assembly",
+    "field_type": "identifier",
+    "description": "Batch/lot number of adhesive used",
+    "tags": ["adhesive", "batch", "material_traceability"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "GASKET_LOT",
+    "display_name": "Gasket Lot Number",
+    "category": "record_of_assembly",
+    "field_type": "identifier",
+    "description": "Lot number of gasket component",
+    "tags": ["gasket", "lot", "traceability"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "SEAL_LOT",
+    "display_name": "Seal Lot Number",
+    "category": "record_of_assembly",
+    "field_type": "identifier",
+    "description": "Lot number of seal component",
+    "tags": ["seal", "lot", "traceability"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "HOUSING_LOT",
+    "display_name": "Housing Lot Number",
+    "category": "record_of_assembly",
+    "field_type": "identifier",
+    "description": "Lot number of housing component",
+    "tags": ["housing", "lot", "traceability"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "CURE_TIME",
+    "display_name": "Cure Time",
+    "category": "record_of_assembly",
+    "field_type": "numeric",
+    "description": "Adhesive/sealant cure time",
+    "unit": "minutes",
+    "tags": ["cure", "time", "adhesive", "process_window"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "CURE_TEMP",
+    "display_name": "Cure Temperature",
+    "category": "record_of_assembly",
+    "field_type": "numeric",
+    "description": "Temperature during cure process",
+    "unit": "C",
+    "tags": ["cure", "temperature", "adhesive", "process_window"],
+    "applicable_part_families": ["*"]
+  }
+]

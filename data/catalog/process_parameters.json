@@ -1,0 +1,49 @@
+[
+  {
+    "field_id": "AMBIENT_TEMP",
+    "display_name": "Ambient Temperature",
+    "category": "process_parameter",
+    "field_type": "numeric",
+    "description": "Environmental temperature during process",
+    "unit": "C",
+    "tags": ["environment", "temperature", "process_context"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "AMBIENT_HUMIDITY",
+    "display_name": "Ambient Humidity",
+    "category": "process_parameter",
+    "field_type": "numeric",
+    "description": "Environmental humidity during process",
+    "unit": "%RH",
+    "tags": ["environment", "humidity", "process_context"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "FIXTURE_ID",
+    "display_name": "Fixture ID",
+    "category": "process_parameter",
+    "field_type": "identifier",
+    "description": "Assembly fixture identifier",
+    "tags": ["fixture", "tooling", "traceability"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "LINE_ID",
+    "display_name": "Production Line ID",
+    "category": "process_parameter",
+    "field_type": "identifier",
+    "description": "Production line identifier",
+    "tags": ["line", "traceability", "process_context"],
+    "applicable_part_families": ["*"]
+  },
+  {
+    "field_id": "SHIFT",
+    "display_name": "Shift",
+    "category": "process_parameter",
+    "field_type": "categorical",
+    "description": "Production shift (1/2/3)",
+    "tags": ["shift", "operator_context", "process_context"],
+    "applicable_part_families": ["*"]
+  }
+]

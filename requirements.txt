@@ -1,0 +1,38 @@
+# Core framework
+crewai>=0.28.0
+crewai-tools>=0.1.0
+
+# LLM serving (on-prem)
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-openai>=0.1.0
+
+# Vector store / RAG
+pgvector>=0.2.0
+psycopg2-binary>=2.9.9
+chromadb>=0.4.0  # Alternative lightweight option
+sentence-transformers>=2.6.0
+
+# Statistical analysis
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+statsmodels>=0.14.0
+matplotlib>=3.7.0
+
+# Data validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# API layer
+fastapi>=0.109.0
+uvicorn>=0.27.0
+
+# Document processing
+pypdf>=3.17.0
+python-docx>=1.0.0
+fpdf2>=2.7.0
+
+# Utilities
+python-dotenv>=1.0.0
+structlog>=24.1.0
