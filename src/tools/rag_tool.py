@@ -182,8 +182,10 @@ class RAGTool:
             from config.settings import get_settings
             settings = get_settings()
             model_name = getattr(settings, "embedding_model_name", None)
+            local_only = getattr(settings, "embedding_local_only", True)
         except Exception:
             model_name = None
+            local_only = True
 
         if not model_name:
             return None
@@ -193,7 +195,15 @@ class RAGTool:
         except Exception:
             return None
 
-        return SentenceTransformer(model_name)
+        try:
+            if local_only:
+                model_path = Path(model_name).expanduser()
+                if not model_path.exists():
+                    return None
+                return SentenceTransformer(str(model_path))
+            return SentenceTransformer(model_name)
+        except Exception:
+            return None
 
     def _embed(self, text: str) -> Optional[list[float]]:
         """Generate embedding for text if model is available."""

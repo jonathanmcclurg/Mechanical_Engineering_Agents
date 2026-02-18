@@ -55,8 +55,12 @@ class Settings(BaseSettings):
         description="Directory to persist product guide chunks and metadata"
     )
     embedding_model_name: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        description="Embedding model name for product guide retrieval"
+        default="./data/models/all-MiniLM-L6-v2",
+        description="Local embedding model path (or model id if local-only is disabled)"
+    )
+    embedding_local_only: bool = Field(
+        default=True,
+        description="If true, only load embeddings from local filesystem path"
     )
     product_guide_auto_ingest: bool = Field(
         default=True,

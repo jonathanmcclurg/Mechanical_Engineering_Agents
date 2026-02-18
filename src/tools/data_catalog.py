@@ -94,9 +94,12 @@ class DataCatalog:
         try:
             from config.settings import get_settings
 
-            model_name = get_settings().embedding_model_name
+            settings = get_settings()
+            model_name = settings.embedding_model_name
+            local_only = settings.embedding_local_only
         except Exception:
             model_name = None
+            local_only = True
 
         if not model_name:
             return None
@@ -107,6 +110,11 @@ class DataCatalog:
             return None
 
         try:
+            if local_only:
+                model_path = Path(model_name).expanduser()
+                if not model_path.exists():
+                    return None
+                return SentenceTransformer(str(model_path))
             return SentenceTransformer(model_name)
         except Exception:
             return None

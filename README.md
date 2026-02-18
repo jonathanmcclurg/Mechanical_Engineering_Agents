@@ -71,6 +71,8 @@ LLM_PROVIDER=local
 LLM_BASE_URL=http://localhost:11434/v1
 LLM_MODEL_NAME=llama3:8b
 LLM_API_KEY=not-needed-for-local
+EMBEDDING_LOCAL_ONLY=true
+EMBEDDING_MODEL_NAME=./data/models/all-MiniLM-L6-v2
 CATALOG_EMBEDDING_TOP_K=50
 PRODUCT_GUIDE_AUTO_INGEST=true
 PRODUCT_GUIDE_REBUILD_ON_STARTUP=false
@@ -78,6 +80,14 @@ EOF
 ```
 
 If no valid LLM config is available, the API starts with mock-response behavior.
+
+### 2.5) Download local embedding model (one-time)
+```bash
+python scripts/download_embedding_model.py
+```
+
+This caches `sentence-transformers/all-MiniLM-L6-v2` into
+`./data/models/all-MiniLM-L6-v2` so retrieval embeddings run locally.
 
 ### 3) (Optional) Start local infrastructure
 ```bash
