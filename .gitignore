@@ -26,7 +26,7 @@ build/
 # Generated outputs (reports/figures/artifacts)
 data/reports/
 data/artifacts/
-data/models/
+#data/models/
 
 # Logs
 *.log
