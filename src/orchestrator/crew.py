@@ -67,6 +67,16 @@ class RCACrew:
         
         # Workflow state
         self._workflow_log: list[dict] = []
+        self._stage_order = [
+            "intake",
+            "product_guide",
+            "research",
+            "hypothesis",
+            "test_plan",
+            "stats",
+            "critic",
+            "report",
+        ]
     
     def _init_agents(self):
         """Initialize all agents with shared tools."""
@@ -228,6 +238,134 @@ class RCACrew:
                 "workflow_log": self._workflow_log,
                 "agent_logs": self._collect_agent_logs(),
             }
+
+    def get_stage_order(self) -> list[str]:
+        """Get the executable stage order for manual flow debugging."""
+        return self._stage_order.copy()
+
+    def start_stage_session(self, raw_case: dict) -> dict[str, Any]:
+        """Initialize a state container for running the workflow stage-by-stage."""
+        self._workflow_log = []
+        self._reset_agent_logs()
+        self._log("Starting stage debug session")
+        return {
+            "context": {"raw_case": raw_case},
+            "outputs": {},
+            "completed_stages": [],
+        }
+
+    def run_stage(
+        self,
+        stage: str,
+        *,
+        context: dict[str, Any],
+        outputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run exactly one stage and mutate context/outputs in-place."""
+        if stage not in self._stage_order:
+            raise ValueError(f"Unknown stage '{stage}'")
+
+        if stage == "intake":
+            self._log("Step 1: Intake Triage")
+            intake_output = self.intake_agent.execute(context)
+            outputs["intake"] = intake_output
+            if not intake_output.success:
+                raise ValueError(f"Intake failed: {intake_output.error_message}")
+            context["case"] = intake_output.data.get("case", {})
+            self._ensure_recipe(context)
+            stage_output = intake_output
+        elif stage == "product_guide":
+            self._require_context_keys(context, ["case"], stage)
+            self._ensure_recipe(context)
+            self._log("Step 2: Product Guide Retrieval")
+            product_guide_output = self.product_guide_agent.execute(context)
+            outputs["product_guide"] = product_guide_output
+            context["product_guide_output"] = product_guide_output.model_dump()
+            stage_output = product_guide_output
+        elif stage == "research":
+            self._require_context_keys(context, ["case"], stage)
+            self._log("Step 3: Private Data Research")
+            research_output = self.research_agent.execute(context)
+            outputs["research"] = research_output
+            context["research_output"] = research_output.model_dump()
+            stage_output = research_output
+        elif stage == "hypothesis":
+            self._require_context_keys(context, ["case", "research_output"], stage)
+            self._log("Step 4: Hypothesis Generation")
+            hypothesis_output = self.hypothesis_agent.execute(context)
+            outputs["hypothesis"] = hypothesis_output
+            context["hypothesis_output"] = hypothesis_output.model_dump()
+            context["hypotheses"] = hypothesis_output.data.get("hypotheses", [])
+            stage_output = hypothesis_output
+        elif stage == "test_plan":
+            self._require_context_keys(context, ["case", "hypothesis_output"], stage)
+            self._log("Step 5: Test Planning")
+            test_plan_output = self.test_plan_agent.execute(context)
+            outputs["test_plan"] = test_plan_output
+            data_frames = self._execute_data_pulls(test_plan_output.data.get("pull_plan", []))
+            context["data_frames"] = data_frames
+            stage_output = test_plan_output
+        elif stage == "stats":
+            self._require_context_keys(context, ["data_frames"], stage)
+            self._log("Step 6: Statistical Analysis")
+            stats_output = self.stats_agent.execute(context)
+            outputs["stats"] = stats_output
+            context["stats_output"] = stats_output.model_dump()
+            context["stats_results"] = stats_output.data
+            stage_output = stats_output
+        elif stage == "critic":
+            self._require_context_keys(context, ["stats_output"], stage)
+            self._log("Step 7: Evidence Critique")
+            context["evidence"] = context["stats_output"].get("data", {}).get("evidence", [])
+            critic_output = self.critic_agent.execute(context)
+            outputs["critic"] = critic_output
+            context["critic_output"] = critic_output.model_dump()
+            stage_output = critic_output
+        else:
+            self._require_context_keys(context, ["critic_output"], stage)
+            self._log("Step 8: Report Generation")
+            report_output = self.report_agent.execute(context)
+            outputs["report"] = report_output
+            stage_output = report_output
+
+        if not stage_output.success:
+            raise ValueError(
+                f"Stage '{stage}' failed: {stage_output.error_message or 'Unknown error'}"
+            )
+
+        return {
+            "stage": stage,
+            "output": stage_output,
+            "workflow_log": self.get_workflow_log(),
+            "agent_logs": self._collect_agent_logs(),
+        }
+
+    def _ensure_recipe(self, context: dict[str, Any]) -> None:
+        """Load recipe into context when case is available and recipe is missing."""
+        if "recipe" in context:
+            return
+        case = context.get("case") or {}
+        failure_type = case.get("failure_type", "")
+        recipe_mode = normalize_recipe_mode(get_settings().recipe_mode)
+        recipe = get_recipe_for_failure(failure_type, recipe_mode=recipe_mode)
+        context["recipe"] = recipe
+        self._log(
+            f"Recipe mode={recipe_mode}. Loaded recipe: {recipe.name if recipe else 'None'}"
+        )
+
+    def _require_context_keys(
+        self,
+        context: dict[str, Any],
+        required: list[str],
+        stage: str,
+    ) -> None:
+        """Validate prerequisites for a stage run."""
+        missing = [key for key in required if key not in context]
+        if missing:
+            raise ValueError(
+                f"Stage '{stage}' requires context keys: {', '.join(required)}. "
+                f"Missing: {', '.join(missing)}."
+            )
     
     def _execute_data_pulls(self, pull_plan: list[dict]) -> dict[str, pd.DataFrame]:
         """Execute data pulls based on the test plan.
@@ -309,3 +447,7 @@ class RCACrew:
     def get_workflow_log(self) -> list[dict]:
         """Get the complete workflow log."""
         return self._workflow_log.copy()
+
+    def get_agent_logs(self) -> dict[str, list[dict]]:
+        """Get current per-agent execution logs."""
+        return self._collect_agent_logs()

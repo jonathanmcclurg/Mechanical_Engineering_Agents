@@ -371,6 +371,9 @@ function App() {
           </p>
         </div>
         <div className="header-actions">
+          <a className="btn btn--secondary" href="#/flow-lab">
+            Open flow lab
+          </a>
           <button className="btn btn--secondary" onClick={refreshAll} disabled={loading}>
             {loading ? 'Refreshing…' : 'Refresh data'}
           </button>

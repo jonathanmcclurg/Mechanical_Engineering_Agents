@@ -11,6 +11,10 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
+try:
+    import pandas as pd
+except Exception:  # pragma: no cover - optional dependency
+    pd = None
 
 from src.schemas.case import FailureCase
 from src.schemas.feedback import EngineerFeedback
@@ -25,6 +29,7 @@ from config.settings import get_settings
 _cases: dict[str, dict] = {}
 _reports: dict[str, dict] = {}
 _feedback: dict[str, dict] = {}
+_stage_sessions: dict[str, dict] = {}
 _crew: Optional[RCACrew] = None
 
 
@@ -143,6 +148,83 @@ class FeedbackSubmission(BaseModel):
     what_worked_well: Optional[str] = None
     what_to_improve: Optional[str] = None
     additional_notes: Optional[str] = None
+
+
+class StageSessionResponse(BaseModel):
+    """Response payload for stage-debug session status."""
+
+    session_id: str
+    status: str
+    created_at: str
+    updated_at: str
+    completed_stages: list[str]
+    next_stage: Optional[str] = None
+    last_error: Optional[str] = None
+    workflow_log: list[dict] = Field(default_factory=list)
+    agent_logs: dict[str, list[dict]] = Field(default_factory=dict)
+    outputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class StageRunRequest(BaseModel):
+    """Request payload for running a stage in a debug session."""
+
+    stage: Optional[str] = Field(
+        default=None,
+        description="Stage name to run. If omitted, next pending stage is executed.",
+    )
+    rerun: bool = Field(
+        default=False,
+        description="Allow rerunning a completed stage.",
+    )
+
+
+def _to_json_safe(value: Any, depth: int = 0) -> Any:
+    """Convert runtime objects into JSON-serializable structures."""
+    if depth > 6:
+        return "<max_depth_reached>"
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if pd is not None and isinstance(value, pd.DataFrame):
+        return {
+            "row_count": int(value.shape[0]),
+            "columns": list(value.columns),
+            "head": value.head(5).to_dict(orient="records"),
+            "__truncated_rows__": max(0, int(value.shape[0]) - 5),
+        }
+    if hasattr(value, "model_dump"):
+        return _to_json_safe(value.model_dump(), depth + 1)
+    if isinstance(value, dict):
+        return {str(k): _to_json_safe(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_json_safe(item, depth + 1) for item in value]
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        try:
+            return _to_json_safe(value.to_dict(), depth + 1)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _build_stage_session_response(session: dict) -> StageSessionResponse:
+    """Create an API-safe snapshot for stage session state."""
+    completed = session.get("completed_stages", [])
+    stage_order = _crew.get_stage_order() if _crew is not None else []
+    next_stage = next((stage for stage in stage_order if stage not in completed), None)
+
+    return StageSessionResponse(
+        session_id=session["session_id"],
+        status=session["status"],
+        created_at=session["created_at"],
+        updated_at=session["updated_at"],
+        completed_stages=completed,
+        next_stage=next_stage,
+        last_error=session.get("last_error"),
+        workflow_log=_to_json_safe(session.get("workflow_log", [])),
+        agent_logs=_to_json_safe(session.get("agent_logs", {})),
+        outputs=_to_json_safe(session.get("outputs", {})),
+    )
 
 
 # Background task to run RCA workflow
@@ -348,6 +430,107 @@ async def health_llm_metrics():
         "base_url": settings.llm_base_url,
         "usage": llm.get_usage_metrics(),
     }
+
+
+@app.get("/flow/stages")
+async def flow_stages():
+    """List executable stage names for debug-mode runs."""
+    if _crew is None:
+        raise HTTPException(status_code=503, detail="RCA crew not initialized")
+    return {"stages": _crew.get_stage_order()}
+
+
+@app.post("/flow/sessions", response_model=StageSessionResponse)
+async def create_flow_session(submission: CaseSubmission):
+    """Create a new stage-debug session from a case payload."""
+    if _crew is None:
+        raise HTTPException(status_code=503, detail="RCA crew not initialized")
+
+    case_id = _new_id("FLOWCASE")
+    case_data = submission.model_dump()
+    case_data["case_id"] = case_id
+    case_data["failure_datetime"] = datetime.utcnow().isoformat()
+
+    initialized = _crew.start_stage_session(case_data)
+    session_id = _new_id("FLOW")
+    now = datetime.utcnow().isoformat()
+    _stage_sessions[session_id] = {
+        "session_id": session_id,
+        "status": "ready",
+        "created_at": now,
+        "updated_at": now,
+        "case_data": case_data,
+        "context": initialized["context"],
+        "outputs": initialized["outputs"],
+        "completed_stages": initialized["completed_stages"],
+        "last_error": None,
+        "workflow_log": _to_json_safe(_crew.get_workflow_log()),
+        "agent_logs": _to_json_safe(_crew.get_agent_logs()),
+    }
+    return _build_stage_session_response(_stage_sessions[session_id])
+
+
+@app.get("/flow/sessions/{session_id}", response_model=StageSessionResponse)
+async def get_flow_session(session_id: str):
+    """Get current state for a stage-debug session."""
+    session = _stage_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Flow session not found")
+    return _build_stage_session_response(session)
+
+
+@app.post("/flow/sessions/{session_id}/run")
+async def run_flow_stage(session_id: str, request: StageRunRequest):
+    """Run one stage for the given stage-debug session."""
+    if _crew is None:
+        raise HTTPException(status_code=503, detail="RCA crew not initialized")
+    session = _stage_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Flow session not found")
+
+    stage_order = _crew.get_stage_order()
+    stage = request.stage
+    if stage is None:
+        stage = next((name for name in stage_order if name not in session["completed_stages"]), None)
+        if stage is None:
+            raise HTTPException(status_code=400, detail="All stages are already completed")
+
+    if stage not in stage_order:
+        raise HTTPException(status_code=400, detail=f"Unknown stage '{stage}'")
+
+    if stage in session["completed_stages"] and not request.rerun:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Stage '{stage}' already completed. Set rerun=true to execute again.",
+        )
+
+    try:
+        result = _crew.run_stage(
+            stage,
+            context=session["context"],
+            outputs=session["outputs"],
+        )
+        if stage not in session["completed_stages"]:
+            session["completed_stages"].append(stage)
+        session["status"] = "ready"
+        session["last_error"] = None
+        session["updated_at"] = datetime.utcnow().isoformat()
+        session["workflow_log"] = _to_json_safe(result.get("workflow_log", []))
+        session["agent_logs"] = _to_json_safe(result.get("agent_logs", {}))
+        return {
+            "session": _build_stage_session_response(session),
+            "stage_result": {
+                "stage": stage,
+                "output": _to_json_safe(result.get("output")),
+                "workflow_log": _to_json_safe(result.get("workflow_log", [])),
+                "agent_logs": _to_json_safe(result.get("agent_logs", {})),
+            },
+        }
+    except Exception as e:
+        session["status"] = "failed"
+        session["last_error"] = str(e)
+        session["updated_at"] = datetime.utcnow().isoformat()
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/cases", response_model=CaseResponse)
