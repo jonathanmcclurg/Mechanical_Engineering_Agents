@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
 import hashlib
+import random
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -103,6 +104,30 @@ class DataFetchResult:
                 "roa_parameters": self.roa_parameters_found,
                 "operator_buyoffs": self.operator_buyoffs_found,
             }
+        }
+
+
+@dataclass
+class TestOutlierResult:
+    """Result of top outlier test-id retrieval for a unit/context."""
+
+    outliers: list[dict[str, Any]]
+    request_id: str
+    fetched_at: datetime
+    context: dict[str, Any]
+
+    def to_citation_dict(self) -> dict:
+        """Convert outlier retrieval metadata to citation format."""
+        return {
+            "source_type": "internal_data_api",
+            "source_id": self.request_id,
+            "source_name": "Manufacturing Outlier API",
+            "timestamp": self.fetched_at.isoformat(),
+            "excerpt": f"Retrieved {len(self.outliers)} top test outliers for this unit context",
+            "details": {
+                "context": self.context,
+                "top_outlier_ids": [item.get("test_id") for item in self.outliers[:10]],
+            },
         }
 
 
@@ -309,6 +334,56 @@ class DataFetchTool:
         )
         
         return self.fetch_data(request)
+
+    def fetch_top_test_outliers(
+        self,
+        serial_number: Optional[str] = None,
+        lot_number: Optional[str] = None,
+        part_number: Optional[str] = None,
+        failure_type: Optional[str] = None,
+        top_n: int = 10,
+        time_window: str = "365d",
+    ) -> TestOutlierResult:
+        """Fetch top-N outlier test IDs and anomaly scores for the current case context."""
+        top_n = max(1, min(int(top_n), 100))
+        context = {
+            "serial_number": serial_number,
+            "lot_number": lot_number,
+            "part_number": part_number,
+            "failure_type": failure_type,
+            "time_window": time_window,
+        }
+        request_hash = hashlib.md5(str(context).encode()).hexdigest()[:8]
+        request_id = f"OUT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{request_hash}"
+
+        if self.mock_mode:
+            outliers = self._generate_mock_test_outliers(top_n=top_n)
+        else:
+            outliers = self._fetch_test_outliers_from_api(
+                serial_number=serial_number,
+                lot_number=lot_number,
+                part_number=part_number,
+                failure_type=failure_type,
+                top_n=top_n,
+                time_window=time_window,
+            )
+
+        result = TestOutlierResult(
+            outliers=outliers,
+            request_id=request_id,
+            fetched_at=datetime.now(),
+            context=context,
+        )
+        self._request_log.append(
+            {
+                "request_id": request_id,
+                "fetched_at": result.fetched_at.isoformat(),
+                "request_type": "top_test_outliers",
+                "row_count": len(outliers),
+                "top_outlier_ids": [item.get("test_id") for item in outliers[:10]],
+            }
+        )
+        return result
     
     def _fetch_from_api(self, request: DataFetchRequest) -> pd.DataFrame:
         """Fetch data from the actual internal API.
@@ -319,6 +394,21 @@ class DataFetchTool:
         """
         raise NotImplementedError(
             "Real API integration not yet implemented. "
+            "Set mock_mode=True for development."
+        )
+
+    def _fetch_test_outliers_from_api(
+        self,
+        serial_number: Optional[str],
+        lot_number: Optional[str],
+        part_number: Optional[str],
+        failure_type: Optional[str],
+        top_n: int,
+        time_window: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch outlier test IDs from production API (placeholder)."""
+        raise NotImplementedError(
+            "Outlier API integration not yet implemented. "
             "Set mock_mode=True for development."
         )
     
@@ -373,6 +463,26 @@ class DataFetchTool:
             df = df.head(request.limit)
         
         return df
+
+    def _generate_mock_test_outliers(self, top_n: int) -> list[dict[str, Any]]:
+        """Generate deterministic-ish mock top-N outlier test IDs from catalog test fields."""
+        candidates = self.data_catalog.list_fields(DataCategory.TEST_DATA)
+        rng = random.Random(42)
+        scored: list[dict[str, Any]] = []
+        for field in candidates:
+            z = round(rng.uniform(1.0, 6.5), 2)
+            direction = rng.choice(["high", "low"])
+            scored.append(
+                {
+                    "test_id": field.field_id,
+                    "description": field.description or field.display_name,
+                    "stddev_from_mean": z,
+                    "abs_stddev_from_mean": abs(z),
+                    "direction": direction,
+                }
+            )
+        scored.sort(key=lambda item: item["abs_stddev_from_mean"], reverse=True)
+        return scored[:top_n]
     
     def _generate_mock_column(self, field_id: str, n: int) -> list:
         """Generate mock data for a single column based on field definition."""

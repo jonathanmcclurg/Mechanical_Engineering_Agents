@@ -78,6 +78,10 @@ class Settings(BaseSettings):
         description="Default Cohen's d for practical significance"
     )
     min_sample_size: int = Field(default=30, description="Minimum sample size for analysis")
+    recipe_mode: str = Field(
+        default="advisory",
+        description="Recipe influence mode: strict, advisory, or off"
+    )
     
     # Paths
     artifacts_dir: str = Field(
@@ -99,6 +103,14 @@ class Settings(BaseSettings):
     catalog_embedding_top_k: int = Field(
         default=50,
         description="Number of candidate fields from semantic search"
+    )
+    outlier_top_n: int = Field(
+        default=10,
+        description="Top-N outlier test IDs to retrieve during research"
+    )
+    outlier_time_window: str = Field(
+        default="365d",
+        description="Historical window used for outlier scoring retrieval"
     )
     
     # Logging

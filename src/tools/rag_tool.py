@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
+from collections import Counter
 import hashlib
 import json
 import re
@@ -219,6 +220,179 @@ class RAGTool:
             return embedding.tolist()
         except Exception:
             return list(embedding)
+
+    def _tokenize(self, text: str) -> list[str]:
+        """Normalize text to a stable token list for lexical retrieval."""
+        normalized = re.sub(r"[^a-z0-9\s\-_]", " ", text.lower())
+        return [token for token in normalized.split() if len(token) >= 2]
+
+    def _cosine_similarity(
+        self,
+        lhs: Optional[list[float]],
+        rhs: Optional[list[float]],
+    ) -> float:
+        """Compute cosine similarity without a hard dependency on NumPy."""
+        if not lhs or not rhs or len(lhs) != len(rhs):
+            return 0.0
+
+        dot = 0.0
+        lhs_sq = 0.0
+        rhs_sq = 0.0
+        for l_val, r_val in zip(lhs, rhs):
+            dot += float(l_val) * float(r_val)
+            lhs_sq += float(l_val) * float(l_val)
+            rhs_sq += float(r_val) * float(r_val)
+
+        denom = (lhs_sq ** 0.5) * (rhs_sq ** 0.5)
+        if denom == 0.0:
+            return 0.0
+        return dot / denom
+
+    def _lexical_score(self, query: str, chunk: DocumentChunk) -> float:
+        """Compute a lexical relevance score with token overlap and phrase bonus."""
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return 0.0
+
+        chunk_tokens = self._tokenize(f"{chunk.section_path} {chunk.content}")
+        if not chunk_tokens:
+            return 0.0
+
+        query_counts = Counter(query_tokens)
+        chunk_counts = Counter(chunk_tokens)
+        overlap = 0.0
+        for token, q_count in query_counts.items():
+            overlap += min(float(q_count), float(chunk_counts.get(token, 0)))
+        overlap_score = overlap / max(float(len(query_tokens)), 1.0)
+
+        phrase = " ".join(query_tokens)
+        phrase_bonus = 0.2 if phrase and phrase in f"{chunk.section_path} {chunk.content}".lower() else 0.0
+        return min(1.0, overlap_score + phrase_bonus)
+
+    def _hierarchy_depth(self, section_path: str) -> int:
+        return len([part.strip() for part in section_path.split(">") if part.strip()])
+
+    def _apply_hierarchical_expansion(
+        self,
+        scored_hits: dict[str, dict[str, Any]],
+        max_expansion: int = 4,
+    ) -> dict[str, dict[str, Any]]:
+        """Expand retrieval around high-value chunks using section hierarchy context."""
+        if not scored_hits:
+            return scored_hits
+
+        base_hits = sorted(
+            scored_hits.values(),
+            key=lambda item: item["score"],
+            reverse=True,
+        )[:max_expansion]
+        expanded = dict(scored_hits)
+
+        for hit in base_hits:
+            chunk: DocumentChunk = hit["chunk"]
+            section_path = chunk.section_path or "Document Root"
+            section_parts = [part.strip() for part in section_path.split(">") if part.strip()]
+            parent_prefixes = [
+                " > ".join(section_parts[:idx])
+                for idx in range(1, len(section_parts))
+            ]
+
+            for candidate in self._chunks.values():
+                if candidate.document_id != chunk.document_id:
+                    continue
+                candidate_section = candidate.section_path or "Document Root"
+                if candidate.chunk_id == chunk.chunk_id:
+                    continue
+
+                is_parent = candidate_section in parent_prefixes
+                is_child = candidate_section.startswith(f"{section_path} >")
+                same_parent = False
+                if len(section_parts) > 1:
+                    parent_path = " > ".join(section_parts[:-1])
+                    same_parent = (
+                        candidate_section.startswith(f"{parent_path} >")
+                        and self._hierarchy_depth(candidate_section) == self._hierarchy_depth(section_path)
+                    )
+
+                if not (is_parent or is_child or same_parent):
+                    continue
+
+                neighbor_score = hit["score"] * 0.7
+                existing = expanded.get(candidate.chunk_id)
+                if existing is None or neighbor_score > existing["score"]:
+                    expanded[candidate.chunk_id] = {
+                        "chunk": candidate,
+                        "score": neighbor_score,
+                        "semantic_score": existing["semantic_score"] if existing else 0.0,
+                        "lexical_score": existing["lexical_score"] if existing else 0.0,
+                        "matched_via": "hierarchy_expansion",
+                    }
+
+        return expanded
+
+    def _extract_coverage_terms(self, text: str) -> list[str]:
+        """Extract candidate coverage terms for follow-up retrieval."""
+        tokens = self._tokenize(text)
+        if not tokens:
+            return []
+
+        stopwords = {
+            "the", "and", "for", "with", "from", "that", "this", "are", "was",
+            "were", "have", "has", "had", "into", "onto", "over", "under", "mode",
+            "case", "part", "failure", "failed", "test", "guide", "section",
+        }
+        ranked = [token for token in tokens if token not in stopwords and len(token) >= 4]
+
+        deduped: list[str] = []
+        seen = set()
+        for token in ranked:
+            if token in seen:
+                continue
+            seen.add(token)
+            deduped.append(token)
+            if len(deduped) >= 10:
+                break
+        return deduped
+
+    def _run_coverage_gap_pass(
+        self,
+        query: str,
+        scored_hits: dict[str, dict[str, Any]],
+        top_k: int,
+    ) -> dict[str, dict[str, Any]]:
+        """Find likely missing terms and run targeted retrieval for better recall."""
+        if not query or not scored_hits:
+            return scored_hits
+
+        expected_terms = self._extract_coverage_terms(query)
+        if not expected_terms:
+            return scored_hits
+
+        covered_text = " ".join(
+            f"{item['chunk'].section_path} {item['chunk'].content}"
+            for item in sorted(scored_hits.values(), key=lambda x: x["score"], reverse=True)[: max(3, top_k)]
+        ).lower()
+        missing_terms = [term for term in expected_terms if term not in covered_text][:3]
+        if not missing_terms:
+            return scored_hits
+
+        expanded = dict(scored_hits)
+        for term in missing_terms:
+            for chunk in self._chunks.values():
+                lexical = self._lexical_score(term, chunk)
+                if lexical < 0.25:
+                    continue
+                boost = min(1.0, lexical * 0.8)
+                existing = expanded.get(chunk.chunk_id)
+                if existing is None or boost > existing["score"]:
+                    expanded[chunk.chunk_id] = {
+                        "chunk": chunk,
+                        "score": boost,
+                        "semantic_score": 0.0,
+                        "lexical_score": lexical,
+                        "matched_via": f"coverage_gap:{term}",
+                    }
+        return expanded
 
     def _store_paths(self) -> tuple[Path, Path]:
         """Return paths for documents and chunks store files."""
@@ -534,6 +708,10 @@ class RAGTool:
         document_filter: Optional[list[str]] = None,
         section_filter: Optional[list[str]] = None,
         min_score: float = 0.0,
+        semantic_weight: float = 0.65,
+        lexical_weight: float = 0.35,
+        enable_hierarchy_expansion: bool = True,
+        enable_coverage_gap_pass: bool = True,
     ) -> list[tuple[DocumentChunk, float]]:
         """Retrieve relevant chunks for a query.
         
@@ -547,14 +725,14 @@ class RAGTool:
         Returns:
             List of (chunk, score) tuples sorted by relevance
         """
-        results = []
+        if not query.strip():
+            return []
 
         # Prefer embedding similarity if available
         query_embedding = self._embed(query)
         use_embeddings = query_embedding is not None
 
-        query_terms = set(query.lower().split())
-
+        scored_hits: dict[str, dict[str, Any]] = {}
         for chunk in self._chunks.values():
             if document_filter and chunk.document_id not in document_filter:
                 continue
@@ -562,27 +740,30 @@ class RAGTool:
                 if not any(sf.lower() in chunk.section_path.lower() for sf in section_filter):
                     continue
 
-            if use_embeddings and chunk.embedding:
-                # Cosine similarity
-                try:
-                    import numpy as np
-                    q = np.array(query_embedding, dtype=float)
-                    c = np.array(chunk.embedding, dtype=float)
-                    denom = (np.linalg.norm(q) * np.linalg.norm(c)) or 1.0
-                    score = float(np.dot(q, c) / denom)
-                except Exception:
-                    score = 0.0
+            semantic_score = self._cosine_similarity(query_embedding, chunk.embedding) if use_embeddings else 0.0
+            lexical_score = self._lexical_score(query, chunk)
+
+            if use_embeddings:
+                score = (semantic_weight * semantic_score) + (lexical_weight * lexical_score)
             else:
-                # Keyword fallback
-                chunk_terms = set(chunk.content.lower().split())
-                overlap = len(query_terms & chunk_terms)
-                score = overlap / max(len(query_terms), 1)
+                score = lexical_score
 
             if score >= min_score:
-                results.append((chunk, score))
+                scored_hits[chunk.chunk_id] = {
+                    "chunk": chunk,
+                    "score": score,
+                    "semantic_score": semantic_score,
+                    "lexical_score": lexical_score,
+                    "matched_via": "hybrid",
+                }
 
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
+        if enable_hierarchy_expansion:
+            scored_hits = self._apply_hierarchical_expansion(scored_hits)
+        if enable_coverage_gap_pass:
+            scored_hits = self._run_coverage_gap_pass(query, scored_hits, top_k)
+
+        ranked = sorted(scored_hits.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+        return [(item["chunk"], float(item["score"])) for item in ranked]
     
     def retrieve_with_citations(
         self,
@@ -601,6 +782,7 @@ class RAGTool:
         for chunk, score in results:
             citation = chunk.to_citation_dict()
             citation["retrieval_score"] = score
+            citation["retrieval_strategy"] = "hybrid_recursive"
             citations.append(citation)
         
         return citations

@@ -1,10 +1,12 @@
 """Private Data Research Agent - retrieves internal evidence from databases."""
 
 import json
+import re
 from typing import Any
 
 from .base_agent import BaseRCAAgent, AgentOutput
 from config.settings import get_settings
+from config.analysis_recipes.loader import normalize_recipe_mode
 from src.tools.sql_tool import SQLTool
 from src.tools.data_fetch_tool import DataFetchTool
 from src.tools.data_catalog import DataCatalog, DataCategory, CatalogField
@@ -63,6 +65,7 @@ Always note the data source and time range for any data retrieved."""
         case = context.get("case", {})
         recipe = context.get("recipe")
         product_guide_output = context.get("product_guide_output", {})
+        recipe_mode = normalize_recipe_mode()
         
         failure_type = case.get("failure_type", "")
         part_number = case.get("part_number", "")
@@ -79,9 +82,31 @@ Always note the data source and time range for any data retrieved."""
             citations.append(similar_cases["citation"])
         except Exception as e:
             self.log(f"Failed to get similar cases: {e}", "warning")
+
+        # 2. Pull top outlier test IDs for this unit context
+        self.log("Retrieving top outlier test IDs")
+        try:
+            outlier_result = self.data_fetch_tool.fetch_top_test_outliers(
+                serial_number=case.get("serial_number"),
+                lot_number=lot_number,
+                part_number=part_number,
+                failure_type=failure_type,
+                top_n=get_settings().outlier_top_n,
+                time_window=get_settings().outlier_time_window,
+            )
+            top_outliers = outlier_result.outliers
+            data_retrieved["top_test_outliers"] = {
+                "data": top_outliers,
+                "row_count": len(top_outliers),
+                "citation": outlier_result.to_citation_dict(),
+                "request_id": outlier_result.request_id,
+            }
+            citations.append(outlier_result.to_citation_dict())
+        except Exception as e:
+            self.log(f"Failed to retrieve outlier test IDs: {e}", "warning")
         
-        # 2. Get data based on recipe requirements
-        if recipe and hasattr(recipe, 'data_requirements'):
+        # 3. Recipe-specific pulls only in strict mode
+        if recipe_mode == "strict" and recipe and hasattr(recipe, 'data_requirements'):
             for data_req in recipe.data_requirements:
                 self.log(f"Querying {data_req.source_name}")
                 try:
@@ -91,7 +116,7 @@ Always note the data source and time range for any data retrieved."""
                 except Exception as e:
                     self.log(f"Failed to query {data_req.source_name}: {e}", "warning")
         
-        # 3. Get component traceability if lot number available
+        # 4. Get component traceability if lot number available
         if lot_number:
             self.log("Getting component traceability")
             try:
@@ -101,18 +126,32 @@ Always note the data source and time range for any data retrieved."""
             except Exception as e:
                 self.log(f"Failed to get traceability: {e}", "warning")
         
-        # 4. Fetch analysis data (test data, ROA, operator buyoffs) for stats
+        # 5. Fetch analysis data (test data, ROA, operator buyoffs) for stats
         self.log("Fetching analysis data from internal API")
         try:
             analysis_data = self._fetch_analysis_data(
                 case=case,
                 recipe=recipe,
                 product_guide_output=product_guide_output,
+                recipe_mode=recipe_mode,
+                top_outlier_tests=data_retrieved.get("top_test_outliers", {}).get("data", []),
             )
             data_retrieved["analysis_data"] = analysis_data
             citations.append(analysis_data["citation"])
         except Exception as e:
             self.log(f"Failed to fetch analysis data: {e}", "warning")
+
+        # 6. Assess whether outlier tests appear causally relevant or likely non-causal
+        try:
+            outlier_relevance = self._assess_outlier_relevance(
+                case=case,
+                top_outlier_tests=data_retrieved.get("top_test_outliers", {}).get("data", []),
+                analysis_data=data_retrieved.get("analysis_data", {}),
+                product_guide_output=product_guide_output,
+            )
+            data_retrieved["outlier_relevance"] = outlier_relevance
+        except Exception as e:
+            self.log(f"Failed outlier relevance scoring: {e}", "warning")
         
         # Summarize what was found
         summary = self._summarize_findings(data_retrieved, case)
@@ -131,6 +170,8 @@ Always note the data source and time range for any data retrieved."""
                 "sources": list(data_retrieved.keys()),
                 "summary": summary,
                 "total_records": total_records,
+                "recipe_mode": recipe_mode,
+                "outlier_relevance_summary": data_retrieved.get("outlier_relevance", {}).get("summary", {}),
             },
             fallback_reasoning=deterministic_reasoning,
         )
@@ -145,6 +186,8 @@ Always note the data source and time range for any data retrieved."""
                 "data_retrieved": data_retrieved,
                 "summary": summary,
                 "total_records": total_records,
+                "recipe_mode": recipe_mode,
+                "recipe_applied": bool(recipe),
                 "llm_analysis_used": used_llm,
                 "llm_analysis": llm_reasoning,
             },
@@ -249,6 +292,7 @@ Always note the data source and time range for any data retrieved."""
         self,
         case: dict,
         product_guide_output: dict,
+        top_outlier_tests: list[dict] | None = None,
     ) -> str:
         """Build an enriched retrieval query from case + product guide context."""
         case_text = " ".join(
@@ -283,9 +327,34 @@ Always note the data source and time range for any data retrieved."""
 
         citation_texts = [str(citation.get("excerpt", "")) for citation in citations[:5] if isinstance(citation, dict)]
 
+        outlier_text = ""
+        if top_outlier_tests:
+            fragments = []
+            for item in top_outlier_tests[:12]:
+                if not isinstance(item, dict):
+                    continue
+                fragments.append(
+                    " ".join(
+                        str(v)
+                        for v in [
+                            item.get("test_id", ""),
+                            item.get("description", ""),
+                            f"z={item.get('stddev_from_mean', '')}",
+                        ]
+                        if v != ""
+                    )
+                )
+            outlier_text = " ".join(fragments)
+
         return " ".join(
             fragment
-            for fragment in [case_text, " ".join(feature_texts), " ".join(signature_texts), " ".join(citation_texts)]
+            for fragment in [
+                case_text,
+                " ".join(feature_texts),
+                " ".join(signature_texts),
+                " ".join(citation_texts),
+                outlier_text,
+            ]
             if fragment
         ).strip()
 
@@ -353,10 +422,16 @@ Always note the data source and time range for any data retrieved."""
         self,
         selected_fields: dict[str, list[str]],
         recipe: Any = None,
+        recipe_mode: str = "advisory",
     ) -> dict[str, list[str]]:
         """Merge recipe must-include fields into selected field groups."""
         must_include = {}
-        if recipe and hasattr(recipe, "must_include_fields") and recipe.must_include_fields:
+        if (
+            recipe_mode in {"strict", "advisory"}
+            and recipe
+            and hasattr(recipe, "must_include_fields")
+            and recipe.must_include_fields
+        ):
             must_include = recipe.must_include_fields
         for key in ["test_ids", "roa_parameters", "operator_buyoffs", "process_parameters"]:
             items = must_include.get(key, []) if isinstance(must_include, dict) else []
@@ -373,10 +448,16 @@ Always note the data source and time range for any data retrieved."""
         case: dict,
         recipe: Any = None,
         product_guide_output: dict | None = None,
+        recipe_mode: str = "advisory",
+        top_outlier_tests: list[dict] | None = None,
     ) -> tuple[dict[str, list[str]], list[CatalogField], str]:
         """Select relevant analysis fields from catalog using product-guide context."""
         product_guide_output = product_guide_output or {}
-        enriched_query = self._build_enriched_catalog_query(case, product_guide_output)
+        enriched_query = self._build_enriched_catalog_query(
+            case,
+            product_guide_output,
+            top_outlier_tests=top_outlier_tests,
+        )
         if not enriched_query:
             enriched_query = f"{case.get('failure_type', '')} {case.get('failure_description', '')}".strip()
 
@@ -424,7 +505,21 @@ Always note the data source and time range for any data retrieved."""
             except Exception as e:
                 self.log(f"LLM field selection failed, using fallback: {e}", "warning")
 
-        selected = self._merge_recipe_must_include(selected, recipe)
+        selected = self._merge_recipe_must_include(selected, recipe, recipe_mode=recipe_mode)
+        outlier_ids_added: list[str] = []
+        if top_outlier_tests:
+            for item in top_outlier_tests:
+                if not isinstance(item, dict):
+                    continue
+                test_id = item.get("test_id")
+                if not isinstance(test_id, str):
+                    continue
+                if self.data_catalog.has_field(test_id) and test_id not in selected["test_ids"]:
+                    selected["test_ids"].append(test_id)
+                    outlier_ids_added.append(test_id)
+
+        if outlier_ids_added:
+            selection_reasoning = f"{selection_reasoning}; added outlier tests: {', '.join(outlier_ids_added[:10])}"
 
         baseline_process_parameters = [
             "AMBIENT_TEMP",
@@ -444,6 +539,8 @@ Always note the data source and time range for any data retrieved."""
         case: dict,
         recipe: Any = None,
         product_guide_output: dict | None = None,
+        recipe_mode: str = "advisory",
+        top_outlier_tests: list[dict] | None = None,
     ) -> dict:
         """Fetch test data, ROA parameters, and operator buyoffs for analysis.
         
@@ -462,6 +559,8 @@ Always note the data source and time range for any data retrieved."""
             case=case,
             recipe=recipe,
             product_guide_output=product_guide_output,
+            recipe_mode=recipe_mode,
+            top_outlier_tests=top_outlier_tests,
         )
         
         # Fetch the data
@@ -486,10 +585,113 @@ Always note the data source and time range for any data retrieved."""
             "process_parameters": selected_fields["process_parameters"],
             "catalog_candidates_considered": [field.field_id for field in candidate_fields],
             "field_selection_reasoning": selection_reasoning,
+            "top_outlier_tests_considered": top_outlier_tests or [],
+            "recipe_mode": recipe_mode,
+            "recipe_guardrails_applied": bool(recipe and recipe_mode in {"strict", "advisory"}),
             "missing_data_summary": result.missing_data_summary,
             "warnings": result.warnings,
             "citation": result.to_citation_dict(),
             "request_id": result.request_id,
+        }
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Tokenize free text into normalized keywords."""
+        return {token for token in re.split(r"[^a-z0-9]+", text.lower()) if len(token) >= 3}
+
+    def _assess_outlier_relevance(
+        self,
+        case: dict,
+        top_outlier_tests: list[dict],
+        analysis_data: dict,
+        product_guide_output: dict,
+    ) -> dict:
+        """Score whether each outlier test looks causally relevant vs likely non-causal."""
+        if not top_outlier_tests:
+            return {"evaluations": [], "summary": {"total": 0, "likely_relevant": 0, "inconclusive": 0, "likely_non_causal": 0}}
+
+        case_text = " ".join(
+            str(case.get(key, "")) for key in ["failure_type", "failure_description", "test_name", "part_number"]
+        )
+        case_tokens = self._tokenize(case_text)
+
+        pg_citations = product_guide_output.get("citations_used", []) if isinstance(product_guide_output, dict) else []
+        guide_text = " ".join(
+            str(c.get("excerpt", "")) + " " + str(c.get("section_path", ""))
+            for c in pg_citations[:40]
+            if isinstance(c, dict)
+        )
+        guide_tokens = self._tokenize(guide_text)
+
+        fetched_test_ids = set(analysis_data.get("test_ids", []) if isinstance(analysis_data, dict) else [])
+        evaluations: list[dict] = []
+        counts = {"likely_relevant": 0, "inconclusive": 0, "likely_non_causal": 0}
+
+        for item in top_outlier_tests:
+            if not isinstance(item, dict):
+                continue
+            test_id = str(item.get("test_id", "")).strip()
+            desc = str(item.get("description", ""))
+            try:
+                if item.get("abs_stddev_from_mean") is not None:
+                    z = float(item.get("abs_stddev_from_mean"))
+                elif item.get("stddev_from_mean") is not None:
+                    z = abs(float(item.get("stddev_from_mean")))
+                else:
+                    z = 0.0
+            except Exception:
+                z = 0.0
+
+            outlier_tokens = self._tokenize(f"{test_id} {desc}")
+            if not outlier_tokens:
+                outlier_tokens = {test_id.lower()} if test_id else set()
+
+            overlap_case = len(outlier_tokens & case_tokens) / max(1, len(outlier_tokens))
+            overlap_guide = len(outlier_tokens & guide_tokens) / max(1, len(outlier_tokens))
+            selected_for_analysis = 1.0 if test_id and test_id in fetched_test_ids else 0.0
+            z_score_norm = min(1.0, z / 6.0)
+
+            relevance_score = (
+                0.25 * z_score_norm
+                + 0.35 * overlap_case
+                + 0.25 * overlap_guide
+                + 0.15 * selected_for_analysis
+            )
+
+            if relevance_score >= 0.6:
+                classification = "likely_relevant"
+            elif relevance_score >= 0.4:
+                classification = "inconclusive"
+            else:
+                classification = "likely_non_causal"
+            counts[classification] += 1
+
+            evaluations.append(
+                {
+                    "test_id": test_id,
+                    "description": desc,
+                    "stddev_from_mean": item.get("stddev_from_mean"),
+                    "direction": item.get("direction"),
+                    "scores": {
+                        "z_outlier_strength": round(z_score_norm, 3),
+                        "case_semantic_overlap": round(overlap_case, 3),
+                        "guide_semantic_overlap": round(overlap_guide, 3),
+                        "selected_for_analysis": round(selected_for_analysis, 3),
+                        "relevance_score": round(relevance_score, 3),
+                    },
+                    "classification": classification,
+                }
+            )
+
+        evaluations.sort(key=lambda e: e["scores"]["relevance_score"], reverse=True)
+        return {
+            "evaluations": evaluations,
+            "summary": {
+                "total": len(evaluations),
+                "likely_relevant": counts["likely_relevant"],
+                "inconclusive": counts["inconclusive"],
+                "likely_non_causal": counts["likely_non_causal"],
+            },
         }
     
     def _summarize_findings(self, data_retrieved: dict, case: dict) -> dict:

@@ -77,7 +77,7 @@ and take appropriate action."""
         
         # Executive Summary
         sections.append(self._generate_executive_summary(
-            case, ranked_hypotheses, critic_output
+            case, ranked_hypotheses, critic_output, research
         ))
         
         # Failure Description
@@ -87,6 +87,9 @@ and take appropriate action."""
         sections.append(self._generate_investigation_scope(
             research, product_guide
         ))
+
+        # Outlier Signal Relevance
+        sections.append(self._generate_outlier_relevance_section(research))
         
         # Hypotheses Section
         sections.append(self._generate_hypotheses_section(
@@ -98,7 +101,7 @@ and take appropriate action."""
         
         # Evidence Summary
         sections.append(self._generate_evidence_summary(
-            stats_output, all_citations
+            stats_output, all_citations, research, hypothesis_output
         ))
         
         # Conclusions
@@ -259,9 +262,19 @@ and take appropriate action."""
         case: dict,
         ranked_hypotheses: list[dict],
         critic_output: dict,
+        research_output: dict,
     ) -> SectionContent:
         """Generate executive summary section."""
         top_hyp = ranked_hypotheses[0] if ranked_hypotheses else None
+        outlier_summary = (
+            research_output.get("data", {})
+            .get("data_retrieved", {})
+            .get("outlier_relevance", {})
+            .get("summary", {})
+        )
+        outlier_total = outlier_summary.get("total", 0)
+        likely_relevant = outlier_summary.get("likely_relevant", 0)
+        likely_non_causal = outlier_summary.get("likely_non_causal", 0)
         
         content = f"""## Executive Summary
 
@@ -280,6 +293,7 @@ and take appropriate action."""
 - {len(ranked_hypotheses)} hypotheses investigated
 - {sum(1 for h in ranked_hypotheses if h.get('stats_support') == 'supported')} supported by statistical evidence
 - {critic_output.get('data', {}).get('critical_issues', 0)} critical issues identified during review
+- Outlier signals assessed: {outlier_total} total ({likely_relevant} likely relevant, {likely_non_causal} likely non-causal)
 """
         
         return SectionContent(
@@ -318,9 +332,18 @@ and take appropriate action."""
         product_guide: dict,
     ) -> SectionContent:
         """Generate investigation scope section."""
-        data_sources = research.get("data", {}).get("data_sources_queried", [])
-        total_records = research.get("data", {}).get("total_records", 0)
+        research_data = research.get("data", {})
+        data_sources = research_data.get("data_sources_queried", [])
+        total_records = research_data.get("total_records", 0)
+        recipe_mode = research_data.get("recipe_mode", "unknown")
         guide_sections = product_guide.get("data", {}).get("sections_found", {})
+        top_outliers = (
+            research_data
+            .get("data_retrieved", {})
+            .get("top_test_outliers", {})
+            .get("data", [])
+        )
+        outlier_ids = [str(item.get("test_id")) for item in top_outliers if isinstance(item, dict) and item.get("test_id")]
         
         content = f"""## Investigation Scope
 
@@ -329,6 +352,12 @@ and take appropriate action."""
 {chr(10).join(f'- {source}' for source in data_sources) if data_sources else '- No data sources queried'}
 
 **Total Records Analyzed:** {total_records}
+**Recipe Mode:** {recipe_mode}
+**Top Outlier Test IDs Retrieved:** {len(outlier_ids)}
+
+### Top Outlier Test IDs
+
+{chr(10).join(f'- {test_id}' for test_id in outlier_ids[:10]) if outlier_ids else '- No outlier test IDs retrieved'}
 
 ### Product Guide Sections Referenced
 
@@ -338,6 +367,50 @@ and take appropriate action."""
         return SectionContent(
             section=ReportSection.INVESTIGATION_SCOPE,
             title="Investigation Scope",
+            content=content,
+        )
+
+    def _generate_outlier_relevance_section(self, research: dict) -> SectionContent:
+        """Generate a section summarizing outlier relevance classifications."""
+        outlier_relevance = (
+            research.get("data", {})
+            .get("data_retrieved", {})
+            .get("outlier_relevance", {})
+        )
+        summary = outlier_relevance.get("summary", {}) if isinstance(outlier_relevance, dict) else {}
+        evaluations = outlier_relevance.get("evaluations", []) if isinstance(outlier_relevance, dict) else []
+
+        total = summary.get("total", len(evaluations))
+        likely_relevant = summary.get("likely_relevant", 0)
+        inconclusive = summary.get("inconclusive", 0)
+        likely_non_causal = summary.get("likely_non_causal", 0)
+
+        relevant_items = [e for e in evaluations if isinstance(e, dict) and e.get("classification") == "likely_relevant"]
+        non_causal_items = [e for e in evaluations if isinstance(e, dict) and e.get("classification") == "likely_non_causal"]
+
+        content = f"""## Outlier Signal Relevance
+
+The system evaluates whether flagged outlier test IDs are likely causal signals, inconclusive indicators, or likely non-causal associations.
+
+### Classification Summary
+
+- Total outlier test IDs evaluated: {total}
+- Likely relevant: {likely_relevant}
+- Inconclusive: {inconclusive}
+- Likely non-causal: {likely_non_causal}
+
+### Likely Relevant Outlier Test IDs
+
+{chr(10).join(f"- {item.get('test_id', 'unknown')} (score: {item.get('scores', {}).get('relevance_score', 'n/a')})" for item in relevant_items[:8]) if relevant_items else '- None'}
+
+### Likely Non-Causal Outlier Test IDs
+
+{chr(10).join(f"- {item.get('test_id', 'unknown')} (score: {item.get('scores', {}).get('relevance_score', 'n/a')})" for item in non_causal_items[:8]) if non_causal_items else '- None'}
+"""
+
+        return SectionContent(
+            section=ReportSection.DATA_SOURCES,
+            title="Outlier Signal Relevance",
             content=content,
         )
     
@@ -423,13 +496,33 @@ and take appropriate action."""
         self,
         stats_output: dict,
         all_citations: list[dict],
+        research_output: dict,
+        hypothesis_output: dict,
     ) -> SectionContent:
         """Generate evidence summary section."""
         evidence = stats_output.get("data", {}).get("evidence", [])
+        outlier_summary = (
+            research_output.get("data", {})
+            .get("data_retrieved", {})
+            .get("outlier_relevance", {})
+            .get("summary", {})
+        )
+        outlier_hyp_count = hypothesis_output.get("data", {}).get("outlier_hypotheses_count")
+        non_outlier_hyp_count = hypothesis_output.get("data", {}).get("non_outlier_hypotheses_count")
         
         content = "## Evidence Summary\n\n"
         content += f"**Total Evidence Items:** {len(evidence)}\n"
         content += f"**Total Citations:** {len(all_citations)}\n\n"
+        content += "### Outlier Causality Assessment\n\n"
+        content += f"- Likely relevant outlier signals: {outlier_summary.get('likely_relevant', 0)}\n"
+        content += f"- Likely non-causal outlier signals: {outlier_summary.get('likely_non_causal', 0)}\n"
+        content += f"- Inconclusive outlier signals: {outlier_summary.get('inconclusive', 0)}\n"
+        if outlier_hyp_count is not None and non_outlier_hyp_count is not None:
+            content += (
+                f"- Hypothesis balance: {outlier_hyp_count} outlier-linked vs "
+                f"{non_outlier_hyp_count} non-outlier pathways\n"
+            )
+        content += "\n"
         
         # Group by support/refute
         supporting = [e for e in evidence if e.get("supports_hypothesis")]

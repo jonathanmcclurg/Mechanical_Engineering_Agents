@@ -8,6 +8,20 @@ import yaml
 from src.schemas.analysis_recipe import AnalysisRecipe, MethodConfig, DataRequirement, StatisticalMethod
 
 
+VALID_RECIPE_MODES = {"strict", "advisory", "off"}
+
+
+def normalize_recipe_mode(recipe_mode: Optional[str] = None) -> str:
+    """Normalize recipe mode string with safe defaults."""
+    if recipe_mode is None:
+        from config.settings import get_settings
+        recipe_mode = get_settings().recipe_mode
+    mode = str(recipe_mode).strip().lower()
+    if mode not in VALID_RECIPE_MODES:
+        return "advisory"
+    return mode
+
+
 def load_recipe(file_path: str | Path) -> AnalysisRecipe:
     """Load a single analysis recipe from a YAML file."""
     with open(file_path, 'r') as f:
@@ -70,9 +84,14 @@ def load_all_recipes(recipes_dir: str | Path) -> dict[str, AnalysisRecipe]:
 
 def get_recipe_for_failure(
     failure_type: str, 
-    recipes_dir: Optional[str] = None
+    recipes_dir: Optional[str] = None,
+    recipe_mode: Optional[str] = None,
 ) -> Optional[AnalysisRecipe]:
     """Get the analysis recipe for a specific failure type."""
+    mode = normalize_recipe_mode(recipe_mode)
+    if mode == "off" or not failure_type:
+        return None
+
     if recipes_dir is None:
         from config.settings import get_settings
         recipes_dir = get_settings().recipes_dir

@@ -6,19 +6,21 @@ from typing import Any, Optional
 from .base_agent import BaseRCAAgent, AgentOutput
 from src.schemas.case import FailureCase, CaseStatus
 from config.analysis_recipes.loader import get_recipe_for_failure
+from config.settings import get_settings
 
 
 class IntakeTriageAgent(BaseRCAAgent):
     """Agent that normalizes incoming failure cases and identifies gaps."""
     
     name = "IntakeTriageAgent"
-    description = "Normalizes failure records, identifies missing fields, and selects analysis recipe"
+    description = "Normalizes failure records, identifies missing fields, and applies optional recipe guardrails"
     
     system_prompt = """You are an intake triage specialist for manufacturing root cause analysis.
 Your job is to:
 1. Review incoming failure reports and normalize the data
 2. Identify any missing critical information
 3. Select the appropriate analysis recipe for this failure type
+   (if available and configured)
 4. Flag any urgent issues that need immediate attention
 
 Be precise and systematic. Missing data should be clearly noted."""
@@ -47,11 +49,12 @@ Be precise and systematic. Missing data should be clearly noted."""
                 data={"raw_case": raw_case}
             )
         
-        # Load analysis recipe for this failure type
-        recipe = get_recipe_for_failure(case.failure_type)
+        recipe_mode = str(get_settings().recipe_mode).strip().lower()
+        # Load analysis recipe for this failure type (optional by mode)
+        recipe = get_recipe_for_failure(case.failure_type, recipe_mode=recipe_mode)
         
         # Identify missing fields
-        missing_fields = self._identify_missing_fields(case, recipe)
+        missing_fields = self._identify_missing_fields(case, recipe, recipe_mode=recipe_mode)
         
         # Identify data quality issues
         quality_issues = self._check_data_quality(case)
@@ -68,6 +71,7 @@ Be precise and systematic. Missing data should be clearly noted."""
                 "quality_issues": quality_issues,
                 "urgency": urgency,
                 "recipe_name": recipe.name if recipe else None,
+                "recipe_mode": recipe_mode,
             },
             fallback_reasoning=deterministic_reasoning,
         )
@@ -81,6 +85,8 @@ Be precise and systematic. Missing data should be clearly noted."""
                 "case": case.model_dump(),
                 "recipe_id": recipe.recipe_id if recipe else None,
                 "recipe_name": recipe.name if recipe else None,
+                "recipe_mode": recipe_mode,
+                "recipe_applied": bool(recipe),
                 "missing_fields": missing_fields,
                 "quality_issues": quality_issues,
                 "urgency": urgency,
@@ -131,31 +137,34 @@ Be precise and systematic. Missing data should be clearly noted."""
     def _identify_missing_fields(
         self, 
         case: FailureCase, 
-        recipe: Optional[Any]
+        recipe: Optional[Any],
+        recipe_mode: str = "advisory",
     ) -> list[dict]:
-        """Identify missing fields based on recipe requirements."""
+        """Identify missing fields using baseline checks plus optional recipe checks."""
         missing = []
-        
-        if recipe is None:
-            # Basic required fields
-            basic_required = ["failure_type", "failure_description", "part_number"]
-            for field in basic_required:
-                if not getattr(case, field, None):
-                    missing.append({
-                        "field": field,
-                        "importance": "critical",
-                        "reason": "Required for any analysis"
-                    })
-            return missing
-        
-        # Check recipe-specific requirements
-        for field in recipe.required_case_fields:
-            value = getattr(case, field, None)
-            if value is None:
+
+        # Always enforce baseline required fields regardless of recipe configuration.
+        basic_required = ["failure_type", "failure_description", "part_number"]
+        for field in basic_required:
+            if not getattr(case, field, None):
                 missing.append({
                     "field": field,
-                    "importance": "high",
-                    "reason": f"Required by analysis recipe '{recipe.name}'"
+                    "importance": "critical",
+                    "reason": "Required for any analysis"
+                })
+
+        # Apply recipe-specific field checks only if a recipe is present.
+        if recipe is not None and hasattr(recipe, "required_case_fields"):
+            for field in recipe.required_case_fields:
+                value = getattr(case, field, None)
+                if value is not None:
+                    continue
+                importance = "high" if recipe_mode == "strict" else "medium"
+                qualifier = "Required" if recipe_mode == "strict" else "Recommended"
+                missing.append({
+                    "field": field,
+                    "importance": importance,
+                    "reason": f"{qualifier} by analysis recipe '{recipe.name}'"
                 })
         
         # Check component lot traceability

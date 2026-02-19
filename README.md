@@ -1,6 +1,6 @@
 # Manufacturing RCA Multi-Agent System
 
-An on-premises, air-gapped multi-agent system for automated Root Cause Analysis (RCA) in manufacturing environments. Uses CrewAI for orchestration with statistical hypothesis testing and cited evidence.
+An on-premises multi-agent system for automated Root Cause Analysis (RCA) in manufacturing environments. Uses a CrewAI-compatible orchestration flow with statistical hypothesis testing and cited evidence.
 
 ## Features
 
@@ -36,7 +36,7 @@ FailureEvent → IntakeTriage → ProductGuideAgent → PrivateDataResearch
 │   └── worker/        # Background job runner / CLI workflow runner
 ├── src/
 │   ├── agents/        # Agent definitions and prompts
-│   ├── orchestrator/  # CrewAI setup
+│   ├── orchestrator/  # CrewAI-compatible orchestration workflow
 │   ├── tools/         # Tool wrappers (SQL, APIs, stats, RAG, data catalog)
 │   ├── schemas/       # Pydantic models
 │   └── evals/         # Evaluation harness
@@ -51,7 +51,7 @@ FailureEvent → IntakeTriage → ProductGuideAgent → PrivateDataResearch
 ## Run Locally (localhost)
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - Node.js 18+ (for the frontend dashboard)
 - Optional: Docker Desktop (if you want local Postgres/pgvector via `infra/docker-compose.yaml`)
 
@@ -71,9 +71,14 @@ LLM_PROVIDER=local
 LLM_BASE_URL=http://localhost:11434/v1
 LLM_MODEL_NAME=llama3:8b
 LLM_API_KEY=not-needed-for-local
+DATABASE_URL=postgresql://user:password@localhost:5432/rca_db
 EMBEDDING_LOCAL_ONLY=true
 EMBEDDING_MODEL_NAME=./data/models/all-MiniLM-L6-v2
+RAG_STORE_DIR=./data/rag_store
 CATALOG_EMBEDDING_TOP_K=50
+RECIPE_MODE=advisory
+OUTLIER_TOP_N=10
+OUTLIER_TIME_WINDOW=365d
 PRODUCT_GUIDE_AUTO_INGEST=true
 PRODUCT_GUIDE_REBUILD_ON_STARTUP=false
 EOF
@@ -156,6 +161,13 @@ python scripts/test_llm_connectivity.py
 python scripts/test_case_llm_usage.py
 ```
 
+## Important Runtime Notes
+
+- API state (`cases`, `reports`, `feedback`) is currently stored in memory in `apps/api/main.py`, so data is not durable across restarts.
+- `SQLTool` and `DataFetchTool` are wired with `mock_mode=True` in default local flows; production integrations must explicitly wire non-mock implementations.
+- CORS is currently permissive (`allow_origins=["*"]`) for local development.
+- For a production hardening checklist, see `MIGRATION.md`.
+
 ## Frontend Web App
 
 The webapp lives in `apps/dashboard` (React + TypeScript + Vite) and provides:
@@ -172,6 +184,7 @@ Core backend endpoints used by the frontend:
 - `POST /cases`
 - `GET /reports`
 - `GET /reports/{report_id}`
+- `GET /reports/{report_id}/pdf`
 - `GET /reports/{report_id}/trace`
 - `GET /cases/{case_id}/trace`
 
@@ -230,9 +243,17 @@ Relevant settings:
 - `CATALOG_DIR` (default: `./data/catalog`)
 - `CATALOG_DB_URL` (optional, for production DB-backed catalog loading)
 - `CATALOG_EMBEDDING_TOP_K` (default: `50`)
+- `OUTLIER_TOP_N` (default: `10`)
+- `OUTLIER_TIME_WINDOW` (default: `365d`)
 
 For known failure modes, analysis recipes can define `must_include_fields` to ensure
 critical fields are always pulled even if not selected by the LLM.
+
+### Recipe Mode
+Use `RECIPE_MODE` to control how strongly analysis recipes influence execution:
+- `strict`: enforce recipe guidance
+- `advisory`: use recipe guidance as recommendations (default)
+- `off`: disable recipe influence
 
 ### Current Integration Status
 `DataFetchTool` and `SQLTool` run in `mock_mode=True` by default in local/dev flows.
@@ -253,11 +274,21 @@ Other useful flags:
 
 ## Tests
 
-Run regression tests:
+Run all tests:
+
+```bash
+python -m unittest discover -s tests
+```
+
+Or run a focused regression suite:
 
 ```bash
 python -m unittest tests.test_audit_regressions
 ```
+
+## Production Migration
+
+See `MIGRATION.md` for a file-by-file checklist of development hardcoded values and what to change for production.
 
 ## License
 

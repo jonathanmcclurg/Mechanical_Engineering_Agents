@@ -24,7 +24,8 @@ from src.tools.rag_tool import RAGTool
 from src.tools.sql_tool import SQLTool
 from src.tools.data_fetch_tool import DataFetchTool
 from src.tools.data_catalog import DataCatalog
-from config.analysis_recipes.loader import get_recipe_for_failure
+from config.analysis_recipes.loader import get_recipe_for_failure, normalize_recipe_mode
+from config.settings import get_settings
 
 
 class RCACrew:
@@ -134,9 +135,12 @@ class RCACrew:
             
             # Load recipe
             failure_type = context["case"].get("failure_type", "")
-            recipe = get_recipe_for_failure(failure_type)
+            recipe_mode = normalize_recipe_mode(get_settings().recipe_mode)
+            recipe = get_recipe_for_failure(failure_type, recipe_mode=recipe_mode)
             context["recipe"] = recipe
-            self._log(f"Loaded recipe: {recipe.name if recipe else 'None'}")
+            self._log(
+                f"Recipe mode={recipe_mode}. Loaded recipe: {recipe.name if recipe else 'None'}"
+            )
             
             # Step 2: Product Guide Retrieval
             self._log("Step 2: Product Guide Retrieval")

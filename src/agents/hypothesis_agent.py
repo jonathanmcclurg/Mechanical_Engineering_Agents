@@ -76,6 +76,17 @@ engineering reasoning that goes beyond the supplied documents."""
         similar_cases_list = similar_cases_block.get("data", [])
         common_hypotheses = recipe.common_hypotheses if recipe else []
         catalog_context = self._extract_catalog_context(research)
+        top_test_outliers = (
+            research.get("data", {})
+            .get("data_retrieved", {})
+            .get("top_test_outliers", {})
+            .get("data", [])
+        )
+        outlier_relevance = (
+            research.get("data", {})
+            .get("data_retrieved", {})
+            .get("outlier_relevance", {})
+        )
         unit_data_summary = {
             "warnings": (
                 research.get("data", {})
@@ -83,6 +94,7 @@ engineering reasoning that goes beyond the supplied documents."""
                 .get("analysis_data", {})
                 .get("warnings", [])
             ),
+            "top_test_outliers": top_test_outliers,
         }
 
         # --- Try LLM-powered hypothesis generation ---
@@ -101,6 +113,7 @@ engineering reasoning that goes beyond the supplied documents."""
                     product_guide_citations=product_guide_citations,
                     catalog_context=catalog_context,
                     unit_data_summary=unit_data_summary,
+                    top_test_outliers=top_test_outliers,
                 )
                 raw = self._call_llm(prompt)
                 parsed = self._parse_llm_hypotheses(raw, case_id, failure_type)
@@ -123,6 +136,13 @@ engineering reasoning that goes beyond the supplied documents."""
 
         # Assign / adjust prior confidences and rank
         hypotheses = self._assign_prior_confidences(hypotheses, research, product_guide)
+        hypotheses = self._ensure_competing_pathways(
+            hypotheses=hypotheses,
+            case_id=case_id,
+            failure_type=failure_type,
+            outlier_relevance=outlier_relevance,
+            top_test_outliers=top_test_outliers,
+        )
         hypotheses.sort(key=lambda h: h.prior_confidence, reverse=True)
         for i, h in enumerate(hypotheses):
             h.rank = i + 1
@@ -145,6 +165,10 @@ engineering reasoning that goes beyond the supplied documents."""
         origin_counts = {}
         for h in hypotheses:
             origin_counts[h.origin.value] = origin_counts.get(h.origin.value, 0) + 1
+        outlier_context = self._extract_outlier_signal_context(
+            outlier_relevance=outlier_relevance,
+            top_test_outliers=top_test_outliers,
+        )
 
         return AgentOutput(
             agent_name=self.name,
@@ -154,6 +178,12 @@ engineering reasoning that goes beyond the supplied documents."""
                 "hypothesis_count": len(hypotheses),
                 "top_hypothesis": hypotheses[0].title if hypotheses else None,
                 "origin_breakdown": origin_counts,
+                "outlier_hypotheses_count": sum(
+                    1 for h in hypotheses if self._hypothesis_mentions_test_ids(h, outlier_context["all_ids"])
+                ),
+                "non_outlier_hypotheses_count": sum(
+                    1 for h in hypotheses if not self._hypothesis_mentions_test_ids(h, outlier_context["all_ids"])
+                ),
                 "llm_analysis_used": used_llm,
                 "llm_analysis": llm_reasoning,
             },
@@ -177,6 +207,7 @@ engineering reasoning that goes beyond the supplied documents."""
         product_guide_citations: list[dict],
         catalog_context: dict[str, list[str]],
         unit_data_summary: dict,
+        top_test_outliers: list[dict],
     ) -> str:
         """Build a single structured prompt for categorized hypothesis generation."""
 
@@ -208,9 +239,24 @@ engineering reasoning that goes beyond the supplied documents."""
         ]
         for w in (unit_data_summary.get("warnings") or [])[:5]:
             unit_lines.append(f"- Data warning: {w}")
+        if top_test_outliers:
+            unit_lines.append("- Top outlier test IDs for this unit context:")
+            for item in top_test_outliers[:10]:
+                if not isinstance(item, dict):
+                    continue
+                unit_lines.append(
+                    "- "
+                    + f"{item.get('test_id', '?')} (z={item.get('stddev_from_mean', '?')}, "
+                    + f"direction={item.get('direction', '?')}): "
+                    + f"{item.get('description', '')}"
+                )
         if catalog_context.get("test_ids"):
             unit_lines.append(
                 f"- Available test fields: {', '.join(catalog_context['test_ids'][:8])}"
+            )
+        if catalog_context.get("outlier_test_ids"):
+            unit_lines.append(
+                f"- Outlier-prioritized test IDs: {', '.join(catalog_context['outlier_test_ids'][:10])}"
             )
         if catalog_context.get("roa_parameters"):
             unit_lines.append(
@@ -281,6 +327,7 @@ IMPORTANT RULES:
 2. Each hypothesis must be specific and testable with manufacturing data.
 3. If the evidence is sparse, lean more on engineering_reasoning.
 4. Do NOT just rephrase the recipe hypotheses — add specificity from the evidence.
+5. Prioritize hypotheses that explain the strongest outlier test-ID signals when plausible.
 
 Return valid JSON only. No markdown fencing. Format:
 {{
@@ -737,17 +784,22 @@ Return valid JSON only. No markdown fencing. Format:
 
     def _extract_catalog_context(self, research: dict) -> dict[str, list[str]]:
         """Extract selected field context from research output for hypothesis planning."""
+        data_retrieved = research.get("data", {}).get("data_retrieved", {})
         analysis_data = (
-            research.get("data", {})
-            .get("data_retrieved", {})
-            .get("analysis_data", {})
+            data_retrieved.get("analysis_data", {})
         )
+        top_outliers = data_retrieved.get("top_test_outliers", {}).get("data", []) or []
+        outlier_ids = []
+        for item in top_outliers:
+            if isinstance(item, dict) and isinstance(item.get("test_id"), str):
+                outlier_ids.append(item["test_id"])
         return {
             "test_ids": analysis_data.get("test_ids", []) or [],
             "roa_parameters": analysis_data.get("roa_parameters", []) or [],
             "operator_buyoffs": analysis_data.get("operator_buyoffs", []) or [],
             "process_parameters": analysis_data.get("process_parameters", []) or [],
             "catalog_candidates_considered": analysis_data.get("catalog_candidates_considered", []) or [],
+            "outlier_test_ids": outlier_ids,
         }
 
     def _assign_prior_confidences(
@@ -791,5 +843,125 @@ Return valid JSON only. No markdown fencing. Format:
                 confidence += 0.1  # Domain knowledge from recipe
 
             hypothesis.prior_confidence = min(0.9, confidence)
+
+        return hypotheses
+
+    def _extract_outlier_signal_context(
+        self,
+        *,
+        outlier_relevance: dict,
+        top_test_outliers: list[dict],
+    ) -> dict[str, set[str]]:
+        """Extract sets of outlier test IDs by relevance class."""
+        all_ids = {
+            str(item.get("test_id"))
+            for item in (top_test_outliers or [])
+            if isinstance(item, dict) and item.get("test_id")
+        }
+        likely_relevant: set[str] = set()
+        likely_non_causal: set[str] = set()
+        evaluations = outlier_relevance.get("evaluations", []) if isinstance(outlier_relevance, dict) else []
+        for ev in evaluations:
+            if not isinstance(ev, dict):
+                continue
+            test_id = ev.get("test_id")
+            if not isinstance(test_id, str):
+                continue
+            cls = ev.get("classification")
+            if cls == "likely_relevant":
+                likely_relevant.add(test_id)
+            elif cls == "likely_non_causal":
+                likely_non_causal.add(test_id)
+        return {
+            "all_ids": all_ids,
+            "likely_relevant": likely_relevant,
+            "likely_non_causal": likely_non_causal,
+        }
+
+    def _hypothesis_mentions_test_ids(self, hypothesis: Hypothesis, test_ids: set[str]) -> bool:
+        """Check whether hypothesis text references any test IDs."""
+        if not test_ids:
+            return False
+        haystack = " ".join(
+            [
+                hypothesis.title,
+                hypothesis.description,
+                hypothesis.mechanism,
+                hypothesis.evidence_basis or "",
+                " ".join(hypothesis.expected_signatures or []),
+            ]
+        ).upper()
+        return any(test_id.upper() in haystack for test_id in test_ids)
+
+    def _ensure_competing_pathways(
+        self,
+        *,
+        hypotheses: list[Hypothesis],
+        case_id: str,
+        failure_type: str,
+        outlier_relevance: dict,
+        top_test_outliers: list[dict],
+    ) -> list[Hypothesis]:
+        """Ensure non-outlier pathways remain viable when outlier links are weak."""
+        context = self._extract_outlier_signal_context(
+            outlier_relevance=outlier_relevance,
+            top_test_outliers=top_test_outliers,
+        )
+        outlier_ids = context["all_ids"]
+        if not outlier_ids:
+            return hypotheses
+
+        outlier_hyps = [h for h in hypotheses if self._hypothesis_mentions_test_ids(h, outlier_ids)]
+        non_outlier_hyps = [h for h in hypotheses if not self._hypothesis_mentions_test_ids(h, outlier_ids)]
+
+        # Penalize hypotheses tied to outliers classified as likely non-causal.
+        for hypothesis in outlier_hyps:
+            if self._hypothesis_mentions_test_ids(hypothesis, context["likely_non_causal"]):
+                hypothesis.prior_confidence = max(0.1, hypothesis.prior_confidence - 0.12)
+
+        # Boost hypotheses tied to outliers with strong relevance.
+        for hypothesis in outlier_hyps:
+            if self._hypothesis_mentions_test_ids(hypothesis, context["likely_relevant"]):
+                hypothesis.prior_confidence = min(0.9, hypothesis.prior_confidence + 0.08)
+
+        # Ensure at least one non-outlier pathway is present.
+        if not non_outlier_hyps:
+            target = self._resolve_measurement_column(failure_type)
+            non_outlier = Hypothesis(
+                hypothesis_id=f"HYP-{case_id}-{uuid.uuid4().hex[:6].upper()}",
+                case_id=case_id,
+                title="Non-outlier causal pathway",
+                description=(
+                    "Primary outlier signals may be associated but non-causal. "
+                    "Investigate independent process/material pathways not anchored to top outlier tests."
+                ),
+                mechanism=(
+                    "Failure is driven by upstream process/material factors that may not create "
+                    "strong anomalies in highlighted outlier test IDs."
+                ),
+                origin=HypothesisOrigin.ENGINEERING_REASONING,
+                expected_signatures=[
+                    "Failure rate differences persist after controlling for outlier test IDs",
+                    "Alternative process variables explain variance better than outlier tests",
+                ],
+                recommended_tests=[
+                    StatisticalTest(
+                        test_type="one_way_anova",
+                        target_variable=target,
+                        grouping_key="lot_number",
+                        expected_signal="Significant group effect independent of flagged outlier tests",
+                    )
+                ],
+                required_data_sources=["leak_test_history", "component_lots", "assembly_parameters"],
+                prior_confidence=0.45,
+            )
+            hypotheses.append(non_outlier)
+            non_outlier_hyps = [non_outlier]
+
+        # Prevent tunnel vision: keep one non-outlier pathway competitive.
+        max_outlier = max((h.prior_confidence for h in outlier_hyps), default=0.0)
+        best_non_outlier = max(non_outlier_hyps, key=lambda h: h.prior_confidence)
+        if max_outlier > 0 and best_non_outlier.prior_confidence < (max_outlier - 0.08):
+            best_non_outlier.prior_confidence = min(0.9, max_outlier - 0.08)
 
         return hypotheses
